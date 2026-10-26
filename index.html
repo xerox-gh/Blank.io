@@ -383,6 +383,12 @@
           <button data-t="dnb">DNB</button>
           <button data-t="dubstep">DUBSTEP</button>
           <button data-t="riddim">RIDDIM</button>
+<button data-t="neon">NEON DRIVE</button>
+<button data-t="pixel">PIXEL RUSH</button>
+<button data-t="euro">EURO STAR</button>
+<button data-t="hard">CORE COLLAPSE</button>
+<button data-t="liquid">BLUE ORBIT</button>
+<button data-t="trance">AFTERGLOW</button>
         </div>
       </div>
     </div>
@@ -1036,8 +1042,86 @@ function playRiddimStep(step, t, step16){
   if(riddimState.wobble) wobbleStep(riddimState.wobble, t, step16, RIDDIM_GATE[pos]);
 }
 
+/* Six original, synthesized songs. Each has an eight-bar progression and
+   a 32-bar arrangement: intro, main theme, breakdown, and final variation. */
+const EXTRA_SONGS = {
+  neon:   { bpm:108, wave:'sawtooth', roots:[45,41,48,43], melody:[12,19,24,19,15,19,22,19], style:'synth' },
+  pixel:  { bpm:172, wave:'square', roots:[48,44,51,46], melody:[12,24,19,15,22,19,27,24], style:'break' },
+  euro:   { bpm:138, wave:'sawtooth', roots:[45,41,48,43], melody:[19,19,22,24,22,19,15,17], style:'dance' },
+  hard:   { bpm:150, wave:'sawtooth', roots:[42,38,45,40], melody:[12,12,19,15,17,19,22,19], style:'hard' },
+  liquid: { bpm:170, wave:'sine', roots:[50,46,53,48], melody:[19,22,26,24,22,19,17,14], style:'break' },
+  trance: { bpm:136, wave:'triangle', roots:[47,43,50,45], melody:[12,19,24,27,24,19,15,22], style:'trance' }
+};
+let extraSong = null;
+function songNote(midi, t, duration, wave, volume, bus){
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  const filter = audioCtx.createBiquadFilter();
+  o.type = wave; o.frequency.value = 440*Math.pow(2,(midi-69)/12);
+  filter.type = 'lowpass'; filter.frequency.value = wave==='square'?2800:4200;
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.linearRampToValueAtTime(volume,t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+duration);
+  o.connect(filter); filter.connect(g); g.connect(bus);
+  o.onended=()=>{o.disconnect();filter.disconnect();g.disconnect();};
+  o.start(t); o.stop(t+duration+0.02);
+}
+function startExtraSong(name){
+  if(!audioCtx || extraSong) return;
+  extraSong={name,step:0,next:audioCtx.currentTime+0.08,buses:makeBuses(),timer:null};
+  scheduleExtraSong();
+}
+function stopExtraSong(){
+  if(!extraSong) return;
+  clearTimeout(extraSong.timer);
+  const buses=extraSong.buses, now=audioCtx.currentTime;
+  for(const bus of Object.values(buses)){
+    bus.gain.cancelScheduledValues(now);
+    bus.gain.setValueAtTime(Math.max(0.0001,bus.gain.value),now);
+    bus.gain.linearRampToValueAtTime(0.0001,now+0.08);
+  }
+  releaseBuses(buses,180);
+  extraSong=null;
+}
+function scheduleExtraSong(){
+  const state=extraSong;
+  if(!state) return;
+  const song=EXTRA_SONGS[state.name], dt=60/song.bpm/4;
+  // Skip elapsed beats after a suspended tab, rather than scheduling a burst.
+  if(state.next<audioCtx.currentTime-0.2) state.next=audioCtx.currentTime+0.02;
+  while(state.next<audioCtx.currentTime+0.12){
+    const step=state.step, pos=step%16, bar=Math.floor(step/16), section=Math.floor(bar/8);
+    const root=song.roots[Math.floor(bar/2)%4], t=state.next;
+    const {kickBus,duckBus}=state.buses;
+    const drums=section!==2 && (section!==0 || bar>=4);
+    if(drums){
+      const kick=song.style==='break' ? [0,6,10].includes(pos) : pos%4===0;
+      if(kick){
+        if(song.style==='hard') playSubKick(t,kickBus); else playKick(t,kickBus);
+        duckPumpGeneric(duckBus,t,song.bpm,0.32);
+      }
+      if(pos===4 || pos===12) playClap(t,duckBus,0.13);
+      if(pos%2===0) playHat(t,0.035,duckBus,pos%4===2?0.12:0.04);
+      if(bar%8===7 && pos>=12) playHat(t,0.055,duckBus,0.035);
+      if(pos%4===2 || (song.style==='break' && pos%4===0))
+        songNote(root-12,t,dt*1.7,'triangle',0.18,duckBus);
+    }
+    if(pos===0){
+      [0,3,7,10].forEach(n=>songNote(root+12+n,t,dt*(section===2?15:7),'triangle',0.025,duckBus));
+    }
+    if(pos%2===0){
+      const n=song.melody[(pos/2+(bar%2)*2)%8];
+      songNote(root+n+(section===3?12:0),t,dt*(section===2?3.5:1.65),song.wave,section===0?0.035:0.06,duckBus);
+    }
+    if(song.style==='trance' && section===3)
+      songNote(root+[12,15,19,24][pos%4],t,dt*0.8,'triangle',0.035,duckBus);
+    state.step=(step+1)%512; state.next+=dt;
+  }
+  state.timer=setTimeout(scheduleExtraSong,25);
+}
+
 /* ---------- track switching ---------- */
 function stopTrackByName(name){
+  if(EXTRA_SONGS[name]) { stopExtraSong(); return; }
   if(name==='space') stopAmbient();
   else if(name==='singular') stopSingular();
   else if(name==='house') stopHouse();
@@ -1046,6 +1130,7 @@ function stopTrackByName(name){
   else if(name==='riddim') stopRiddim();
 }
 function startTrackByName(name){
+  if(EXTRA_SONGS[name]) { startExtraSong(name); return; }
   if(name==='space') startAmbient();
   else if(name==='singular') startSingular();
   else if(name==='house') startHouse();
