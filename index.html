@@ -276,6 +276,13 @@
     #leaderboard{min-width:130px;font-size:12px;}
     .ability{width:56px;height:56px;}
   }
+
+  .ability{cursor:pointer;color:var(--starlight);touch-action:manipulation;pointer-events:auto;font-family:inherit;}
+  .ability.ready{border-color:var(--cyan);box-shadow:0 0 18px #3ddbf025;}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:4px;}
+  .goStats{max-width:600px;line-height:1.8;}
+  #minimap{pointer-events:none;}
+  @media(max-width:600px){#hud{padding:10px;}#massBox{padding:8px;}#massBox .label{font-size:8px;}#massBox .value{font-size:16px;}#minimap{width:96px;height:96px;right:10px;bottom:100px;}#muteBtn{bottom:205px;right:10px;} .instructions{font-size:13px;} .overlay{padding:14px;} }
 </style>
 </head>
 <body>
@@ -298,21 +305,21 @@
 </div>
 
 <div id="abilityBar" class="hidden">
-  <div class="ability" id="abil-pulse">
+  <button type="button" class="ability" id="abil-pulse">
     <div class="abilFill"></div>
     <span class="abilKey">SPACE</span>
     <span class="abilName">Gravity<br>Pulse</span>
-  </div>
-  <div class="ability" id="abil-dash">
+  </button>
+  <button type="button" class="ability" id="abil-dash">
     <div class="abilFill"></div>
     <span class="abilKey">SHIFT</span>
     <span class="abilName">Horizon<br>Dash</span>
-  </div>
-  <div class="ability" id="abil-burst">
+  </button>
+  <button type="button" class="ability" id="abil-burst">
     <div class="abilFill"></div>
     <span class="abilKey">Q</span>
     <span class="abilName">Hawking<br>Burst</span>
-  </div>
+  </button>
 </div>
 
 <button id="muteBtn" class="iconBtn hidden" title="Mute">🔊</button>
@@ -331,9 +338,9 @@
     <button class="btn secondary" id="optionsBtnMenu">OPTIONS</button>
   </div>
   <div class="instructions">
-    Move your <b>black hole</b> with the mouse. Swallow drifting matter to grow.
+    Move with your <b>mouse, WASD, arrow keys, or touch</b>. Swallow drifting matter to grow.
     Consume smaller holes — avoid anything bigger, or you'll be the one pulled in.<br><br>
-    Three specials, yours alone: <span class="keys">SPACE</span> pulls in matter,
+    Tap the ability buttons or use: <span class="keys">SPACE</span> pulls in matter,
     <span class="keys">SHIFT</span> dashes you forward, <span class="keys">Q</span> shoves nearby holes away.
   </div>
 </div>
@@ -1135,7 +1142,7 @@ function clampToWorld(b){
 let player = null;
 let bots = [];
 let food = [];
-const FOOD_MAX = 260;
+const FOOD_MAX = 420;
 const BOT_COUNT = 13;
 const BOT_NAMES = ["Sagittarius","Cygnus X-1","Void Wren","M87*","Abyssal","Kerr","Nyx","Tzitzimitl","Oblivion","Charon","Erebus","Hadal","Umbra","Nihil","Vantablack","Dread Star","Ligo-9","Event-7"];
 
@@ -1159,6 +1166,7 @@ function spawnBot(){
   const hue = HUES[Math.floor(rand(0,HUES.length))];
   const mass = rand(12, 90);
   const b = makeBlob(Math.cos(angle)*r, Math.sin(angle)*r, mass, hue, name, false, true);
+  if(player && dist(b,player) < 500) { b.x = (Math.random()<0.5?-1:1)*1400; b.y = rand(-1400,1400); }
   bots.push(b);
 }
 
@@ -1191,6 +1199,10 @@ for(let i=0;i<6;i++){
 
 /* ============ INPUT ============ */
 const mouse = {x:W/2, y:H/2};
+const keys = new Set();
+window.addEventListener('keyup', e=>keys.delete(e.code));
+window.addEventListener('blur', ()=>{ keys.clear(); if(screen==='playing') setScreen('paused'); });
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden && screen==='playing') setScreen('paused'); });
 gameCanvas.addEventListener('mousemove', e=>{ mouse.x = e.clientX; mouse.y = e.clientY; });
 gameCanvas.addEventListener('touchmove', e=>{
   if(e.touches[0]){ mouse.x = e.touches[0].clientX; mouse.y = e.touches[0].clientY; }
@@ -1259,6 +1271,8 @@ function tryBurst(){
   }
 }
 
+[['pulse',tryPulse],['dash',tryDash],['burst',tryBurst]].forEach(([id,action])=>document.getElementById('abil-'+id).addEventListener('click',action));
+
 window.addEventListener('keydown', e=>{
   if(e.code==='Escape'){
     if(screen==='playing') setScreen('paused');
@@ -1267,7 +1281,10 @@ window.addEventListener('keydown', e=>{
     return;
   }
   const typing = document.activeElement && document.activeElement.tagName === 'INPUT';
-  if(typing) return; // let the player type their name freely, spaces included
+  if(typing) return;
+  keys.add(e.code);
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if(e.repeat) return;
   if(e.code==='Space'){
     e.preventDefault();
     tryPulse();
@@ -1285,6 +1302,9 @@ const camera = {x:0, y:0, scale:1};
 let screen = 'menu'; // menu | playing | paused | options | gameover
 let optionsReturnScreen = 'menu';
 let elapsedMassEaten = 0;
+let runTime = 0, kills = 0;
+let bestMass = 0;
+try { bestMass = Number(localStorage.getItem("blank-best")) || 0; } catch {}
 let shockwaves = [];
 
 const menuEl = document.getElementById('menu');
@@ -1381,13 +1401,18 @@ function startGame(){
   specials.dash.cd=0; specials.dash.active=0;
   specials.burst.cd=0; specials.burst.active=0;
   shockwaves = [];
-  elapsedMassEaten = 0;
-
+  elapsedMassEaten = 0; runTime = 0; kills = 0; keys.clear();
+  mouse.x = W/2; mouse.y = H/2;
+  bots = bots.filter(b=>dist(b,player)>500);
+  while(bots.length<BOT_COUNT) spawnBot();
+  updateLeaderboard(allLiving());
   setScreen('playing');
 }
 
 function endGame(){
-  goStatsEl.textContent = 'Final mass: ' + Math.round(player.mass) + '  •  matter consumed: ' + Math.round(elapsedMassEaten);
+  bestMass = Math.max(bestMass, Math.round(player.mass));
+  try { localStorage.setItem('blank-best', String(bestMass)); } catch {}
+  goStatsEl.textContent = 'Mass '+Math.round(player.mass)+' · '+kills+' eliminations · '+Math.floor(runTime)+'s survived · Best '+bestMass;
   setScreen('gameover');
   sfxDanger();
 }
@@ -1469,6 +1494,7 @@ function handleEating(living){
       const f = food[i];
       if(dist(b,f) < b.radius){
         b.mass += f.mass;
+        if(b.isPlayer) elapsedMassEaten += f.mass;
         food.splice(i,1);
       }
     }
@@ -1485,8 +1511,8 @@ function handleEating(living){
       if(d < a.radius - b.radius*0.5){
         a.mass += b.mass * 0.82;
         b.alive = false;
-        if(b.isPlayer) endGame();
-        if(a.isPlayer){ elapsedMassEaten += b.mass; sfxEat(b.mass); }
+        if(b.isPlayer) { endGame(); return; }
+        if(a.isPlayer){ kills++; shockwaves.push({x:a.x,y:a.y,r:a.radius,max:a.radius*3,t:0,color:"orange"}); elapsedMassEaten += b.mass; sfxEat(b.mass); }
       }
     }
   }
@@ -1498,6 +1524,10 @@ let lbTimer = 0;
 
 function update(dt){
   const wm = getWorldMouse();
+  const kx = Number(keys.has('KeyD') || keys.has('ArrowRight')) - Number(keys.has('KeyA') || keys.has('ArrowLeft'));
+  const ky = Number(keys.has('KeyS') || keys.has('ArrowDown')) - Number(keys.has('KeyW') || keys.has('ArrowUp'));
+  if(kx || ky){ wm.x = player.x + kx*500; wm.y = player.y + ky*500; }
+  runTime += dt;
 
   if(player.alive){
     const dx = wm.x - player.x, dy = wm.y - player.y;
@@ -1525,10 +1555,11 @@ function update(dt){
   for(let i=0;i<living.length;i++) applyGravity(living[i], dt, living[i].isPlayer ? pullMult : 1);
 
   handleEating(living);
+  if(screen !== 'playing') return;
 
   while(food.length < FOOD_MAX){ spawnFood(); }
   const aliveBots = bots.filter(b=>b.alive).length;
-  if(aliveBots < BOT_COUNT && Math.random() < 0.03){ spawnBot(); }
+  if(aliveBots < BOT_COUNT && Math.random() < 1-Math.exp(-1.8*dt)){ spawnBot(); }
   bots = bots.filter(b=>b.alive || Math.random()>0.02);
 
   for(const key in specials){
@@ -1545,19 +1576,19 @@ function update(dt){
 
   if(player.alive){
     const targetScale = clamp(1.25 - (player.radius-24)/260, 0.32, 1.25);
-    camera.scale += (targetScale - camera.scale) * 0.04;
-    camera.x += (player.x - camera.x) * 0.09;
-    camera.y += (player.y - camera.y) * 0.09;
+    camera.scale += (targetScale - camera.scale) * (1-Math.exp(-2.45*dt));
+    camera.x += (player.x - camera.x) * (1-Math.exp(-5.66*dt));
+    camera.y += (player.y - camera.y) * (1-Math.exp(-5.66*dt));
   }
 
-  massValueEl.textContent = Math.round(player.mass);
+  massValueEl.textContent = Math.round(player.mass)+' · '+kills+' KOs';
 
   lbTimer -= dt;
   if(lbTimer <= 0){ lbTimer = 0.5; updateLeaderboard(living); }
 }
 
 function updateLeaderboard(living){
-  const sorted = living.slice().sort((a,b)=>b.mass-a.mass).slice(0,5);
+  const sorted = living.filter(b=>b.alive).slice().sort((a,b)=>b.mass-a.mass).slice(0,5);
   lbListEl.innerHTML = '';
   sorted.forEach(b=>{
     const li = document.createElement('li');
@@ -1575,6 +1606,8 @@ function updateAbilityBarUI(){
 function setAbilFill(id, pct){
   const el = document.getElementById(id);
   const fill = el.querySelector('.abilFill');
+  el.classList.toggle('ready', pct<=0);
+  el.setAttribute('aria-label', id.replace('abil-','') + (pct<=0?' ready':' cooling down'));
   fill.style.height = (Math.max(0, Math.min(1,pct))*100) + '%';
 }
 
@@ -1750,3 +1783,4 @@ requestAnimationFrame(mainLoop);
 </script>
 </body>
 </html>
+
